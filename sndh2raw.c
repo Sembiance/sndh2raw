@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <string.h>
 #include <errno.h>
+#include <string.h>
 #include <time.h>
 #include <jansson.h>
 #include <api68/api68.h>
@@ -25,6 +26,33 @@ static void usage(void)
 
 char * inputFilePath=0;
 char * outputDirPath=0;
+
+char * strchrtrim(char * str, char letter)
+{
+    if(!str)
+        return str;
+
+    while(*str==letter && *str)
+	{
+        strcpy(str, str+1);
+	}
+
+	return str;
+}
+
+char * strrchrtrim(char * str, char letter)
+{
+    if(!str)
+       	return str;
+
+    while(str[(strlen(str)-1)] == letter && strlen(str))
+	{
+        str[(strlen(str)-1)] = '\0';
+	}
+
+    return str;
+}
+
 
 static void parse_options(int argc, char **argv)
 {
@@ -86,21 +114,24 @@ int main(int argc, char ** argv)
 	api68_music_info_t diskInfo;
 	json_t * tracksJSON=json_array();
 	int trackCount=0;
-	const char ** trackNames=0;
+	char ** trackNames=0;
+	char * albumTitle;
 	if(!api68_music_info(sc68, &diskInfo, 0, 0))
 	{
 		trackCount = diskInfo.tracks;
-		trackNames = (const char **)malloc(sizeof(const char *)*trackCount);
+		trackNames = (char **)malloc(sizeof(char *)*trackCount);
 		json_object_set(json, "trackCount", json_integer(trackCount));
+		albumTitle = strchrtrim(strrchrtrim(strdup(diskInfo.title), ' '), ' ');
+		json_object_set(json, "albumTitle", json_string(albumTitle));
 		for(int i=1;i<=trackCount;i++)
 		{
 			api68_music_info_t trackInfo;
 			json_t * trackJSON = json_object();
 			if(!api68_music_info(sc68, &trackInfo, i, 0))
 			{
-				trackNames[i-1] = trackInfo.title;
+				trackNames[i-1] = strchrtrim(strrchrtrim(strdup(trackInfo.title), ' '), ' ');
 				json_object_set(trackJSON, "trackNum", json_integer(trackInfo.track));
-				json_object_set(trackJSON, "title", json_string(trackInfo.title));
+				json_object_set(trackJSON, "title", json_string(trackNames[i-1]));
 				json_object_set(trackJSON, "author", json_string(trackInfo.author));
 				json_object_set(trackJSON, "composer", json_string(trackInfo.composer));
 				json_object_set(trackJSON, "replay", json_string(trackInfo.replay));
@@ -146,7 +177,7 @@ int main(int argc, char ** argv)
 				if(curTrack==0)
 					break;
 
-				sprintf(trackFilePath, "%s/%d %s.raw", outputDirPath, curTrack, trackNames[curTrack-1]);
+				sprintf(trackFilePath, "%s/%s %02d - %s.raw", outputDirPath, albumTitle, curTrack, trackNames[curTrack-1]);
 				fd = fopen(trackFilePath, "wb");
 				if(fd==0)
 				{
