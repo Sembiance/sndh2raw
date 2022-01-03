@@ -8,9 +8,9 @@
 #include <string.h>
 #include <time.h>
 #include <jansson.h>
-#include <api68/api68.h>
+#include <sc68/sc68.h>
 
-#define SNDH2RAW_VERSION "1.0.0"
+#define SNDH2RAW_VERSION "1.1.0"
 
 static void usage(void)
 {
@@ -89,34 +89,31 @@ static void parse_options(int argc, char **argv)
 
 int main(int argc, char ** argv)
 {
-	api68_init_t init68;
-	static api68_t * sc68 = 0;
+	static sc68_t * sc68 = 0;
+	sc68_create_t create68;
 	json_t * json = json_object();
 
 	parse_options(argc, argv);
 
-	memset(&init68, 0, sizeof(init68));
-	init68.alloc = malloc;
-	init68.free = free;
-
-	sc68 = api68_init(&init68);
-	if(!sc68)
+	if(sc68_init(0))
 		goto ERROR;
 
-	if(api68_verify_file(inputFilePath)<0)
+	memset(&create68, 0, sizeof(create68));
+	sc68 = sc68_create(&create68);
+	if(sc68==0)
 		goto ERROR;
 
-	if(api68_load_file(sc68, inputFilePath))
+	if(sc68_load_uri(sc68, inputFilePath))
 		goto ERROR;
 	
-	json_object_set(json, "samplingRate", json_integer(init68.sampling_rate));
+	json_object_set(json, "samplingRate", json_integer(create68.sampling_rate));
 
-	api68_music_info_t diskInfo;
+	sc68_music_info_t diskInfo;
 	json_t * tracksJSON=json_array();
 	int trackCount=0;
 	char ** trackNames=0;
 	char * albumTitle;
-	if(!api68_music_info(sc68, &diskInfo, 0, 0))
+	if(!sc68_music_info(sc68, &diskInfo, 0, 0))
 	{
 		trackCount = diskInfo.tracks;
 		trackNames = (char **)malloc(sizeof(char *)*trackCount);
@@ -125,19 +122,17 @@ int main(int argc, char ** argv)
 		json_object_set(json, "albumTitle", json_string(albumTitle));
 		for(int i=1;i<=trackCount;i++)
 		{
-			api68_music_info_t trackInfo;
+			sc68_music_info_t trackInfo;
 			json_t * trackJSON = json_object();
-			if(!api68_music_info(sc68, &trackInfo, i, 0))
+			if(!sc68_music_info(sc68, &trackInfo, i, 0))
 			{
 				trackNames[i-1] = strchrtrim(strrchrtrim(strdup(trackInfo.title), ' '), ' ');
-				json_object_set(trackJSON, "trackNum", json_integer(trackInfo.track));
+				json_object_set(trackJSON, "trackNum", json_integer(trackInfo.trk.track));
 				json_object_set(trackJSON, "title", json_string(trackNames[i-1]));
-				json_object_set(trackJSON, "author", json_string(trackInfo.author));
-				json_object_set(trackJSON, "composer", json_string(trackInfo.composer));
+				json_object_set(trackJSON, "artist", json_string(trackInfo.artist));
 				json_object_set(trackJSON, "replay", json_string(trackInfo.replay));
-				json_object_set(trackJSON, "type", json_string(trackInfo.hwname));
-				json_object_set(trackJSON, "duration", json_integer(trackInfo.time_ms));
-				json_object_set(trackJSON, "start", json_integer(trackInfo.start_ms));
+				json_object_set(trackJSON, "type", json_string(trackInfo.trk.hw));
+				json_object_set(trackJSON, "duration", json_integer(trackInfo.trk.time_ms));
 				json_object_set(trackJSON, "rate", json_integer(trackInfo.rate));
 			}
 			json_array_append(tracksJSON, trackJSON);
@@ -146,47 +141,44 @@ int main(int argc, char ** argv)
 	json_object_set(json, "tracks", tracksJSON);
 
 	int lastTrack=0;
+	int curTrack=1;
 	char trackFilePath[2048];
 	FILE * fd=0;
 
-	if(api68_play(sc68, 1)==-1)
+	if(sc68_play(sc68, curTrack, 0)==-1)
 		goto ERROR;
-
+		
 	while(true)
 	{
 		char buffer[512 * 4];
-		int code = api68_process(sc68, buffer, sizeof(buffer) >> 2);
-		if(code==API68_MIX_ERROR)
+		int numSamples = sizeof(buffer) >> 2;
+		int code = sc68_process(sc68, buffer, &numSamples);
+		if(code==SC68_ERROR)
 			goto ERROR;
-		
-		if(code & API68_LOOP_BIT)
+
+		if(code & SC68_CHANGE)
 		{
-			int curTrack = api68_play(sc68, -1);
-			if(curTrack!=lastTrack)
+			if(lastTrack>0)
 			{
-				if(lastTrack>0)
+				if(fclose(fd)!=0)
 				{
-					if(fclose(fd)!=0)
-					{
-						fprintf(stderr, "Failed to close output file [%s] Error: %s\n", trackFilePath, strerror(errno));
-						goto ERROR;
-					}
-				}
-
-				// if it's 0 then we are done
-				if(curTrack==0)
-					break;
-
-				sprintf(trackFilePath, "%s/%s %02d - %s.raw", outputDirPath, albumTitle, curTrack, trackNames[curTrack-1]);
-				fd = fopen(trackFilePath, "wb");
-				if(fd==0)
-				{
-					fprintf(stderr, "Failed to open output file [%s] Error: %s\n", trackFilePath, strerror(errno));
+					fprintf(stderr, "Failed to close output file [%s] Error: %s\n", trackFilePath, strerror(errno));
 					goto ERROR;
-				}
-
-				lastTrack = curTrack;
+				}				
 			}
+
+			lastTrack = curTrack;
+			curTrack = sc68_play(sc68, SC68_CUR_TRACK, 0);
+
+			sprintf(trackFilePath, "%s/%s %02d - %s.raw", outputDirPath, albumTitle, curTrack, trackNames[curTrack-1]);
+			fd = fopen(trackFilePath, "wb");
+			if(fd==0)
+			{
+				fprintf(stderr, "Failed to open output file [%s] Error: %s\n", trackFilePath, strerror(errno));
+				goto ERROR;
+			}
+
+			//printf("change flag %d => %d\n", lastTrack, curTrack);
 		}
 
 		if(fd==0)
@@ -195,30 +187,50 @@ int main(int argc, char ** argv)
 			goto ERROR;
 		}
 
+		//if(code & SC68_LOOP)
+		//	printf("loop flag\n");
+
+		if(code & SC68_END)
+		{
+			//printf("end flag\n");
+
+			if(fclose(fd)!=0)
+			{
+				fprintf(stderr, "Failed to close output file [%s] Error: %s\n", trackFilePath, strerror(errno));
+				goto ERROR;
+			}
+
+			break;
+		}
+
+
+		//printf("write buffer\n");
 		if(fwrite(buffer, sizeof(buffer), 1, fd)!=1)
 		{
 			fprintf(stderr, "Failed to write %ld bytes output to [%s]\n", sizeof(buffer), trackFilePath);
 			goto ERROR;
 		}
-
-		if(code & API68_END)
-			break;
 	}
 
-	api68_shutdown(sc68);
+	sc68_shutdown();
 	printf("%s\n", json_dumps(json, 0));
 	exit(EXIT_SUCCESS);
 
 ERROR:
-	api68_shutdown(sc68);
+	sc68_shutdown();
 
+	fprintf(stderr, "Errors:\n");
 	const char * s;
-	if(s = api68_error(), s)
+	s = sc68_error(sc68);
+	if(s && strlen(s))
+		fprintf(stderr, "%s\n", s);
+	
+	while(true)
 	{
-		fprintf(stderr, "Error messages:\n");
-		do
-		{
-			fprintf(stderr, "%s\n", s);
-		} while (s = api68_error(), s!=NULL);
+		s = sc68_error(0);
+		if(!s || !strlen(s))
+			break;
+		
+		fprintf(stderr, "%s\n", s);
 	}
 }
